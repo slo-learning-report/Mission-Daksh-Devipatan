@@ -348,6 +348,14 @@ table.sch .thi{font-size:1rem;font-weight:800}
 .tile .ti{display:inline-flex;align-items:center;min-height:1.6em}
 table.sch .thi .boardicon{width:2em;height:1.58em}
 
+/* bottom download section */
+.dlsec{margin-top:26px;padding:18px 20px;border-radius:20px;background:var(--blue-t);border:2px solid var(--blue)}
+.dlsec h2{font-size:1.2rem}
+.dlrow2{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
+.dlsec .dlbtn{min-height:54px;padding:12px 24px;border-radius:14px;border:0;background:var(--blue);color:#fff;font-weight:800;font-size:1rem}
+.dlsec .dlbtn.alt{background:var(--purple,#6b4fbb)}
+@media(max-width:560px){.dlsec .dlbtn{width:100%}}
+
 </style>
 </head>
 <body>
@@ -610,6 +618,132 @@ function listStatus(p) { return statusOf(p); }
 function groupBy(children, fn) { const m = new Map(); for (const c of children) { const k = fn(c); if (!m.has(k)) m.set(k, []); m.get(k).push(c); } return m; }
 
 /* ==========================================================================
+   Minimal .xlsx writer (no library): coloured cells, several sheets, UTF-8 Hindi text.
+   A .xlsx file is a zip of XML parts; the zip here is "stored" (no compression).
+   ========================================================================== */
+const XLSXW = (function () {
+  const enc = new TextEncoder();
+  const crcTable = (function () { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } return t; })();
+  function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+
+  /* style ids -> index into cellXfs below */
+  const STY = { def: 0, hdr: 1, G: 2, Y: 3, R: 4, title: 5, gP: 6, yP: 7, rP: 8, gray: 9, txt: 10, bold: 11, pct: 12, note: 13, num: 14, left: 15 };
+  const STYLES_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.0&quot;%&quot;"/></numFmts>' +
+    '<fonts count="7"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font>' +
+    '<font><b/><sz val="11"/><color rgb="FF006100"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF9C5700"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF9C0006"/><name val="Calibri"/></font>' +
+    '<font><i/><sz val="10"/><color rgb="FF595959"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+    ['FFD9E2F3', 'FFC6EFCE', 'FFFFEB9C', 'FFFFC7CE', 'FFEDEDED'].map(c => '<fill><patternFill patternType="solid"><fgColor rgb="' + c + '"/><bgColor indexed="64"/></patternFill></fill>').join('') + '</fills>' +
+    '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border>' + ['left', 'right', 'top', 'bottom'].map(k => '<' + k + ' style="thin"><color rgb="FFBFBFBF"/></' + k + '>').join('') + '<diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="16">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +                                                                                                  // 0 default
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 1 header
+    '<xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 2 green
+    '<xf numFmtId="0" fontId="4" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 3 yellow
+    '<xf numFmtId="0" fontId="5" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 4 red
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                                                                      // 5 title
+    '<xf numFmtId="164" fontId="3" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' + // 6 green %
+    '<xf numFmtId="164" fontId="4" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' + // 7 yellow %
+    '<xf numFmtId="164" fontId="5" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' + // 8 red %
+    '<xf numFmtId="0" fontId="6" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' + // 9 gray
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +                    // 10 text
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +      // 11 bold
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' + // 12 pct plain
+    '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +                                                                                      // 13 note
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +                  // 14 number
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>' +  // 15 left
+    '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+
+  const esc = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escAttr = s => esc(s).replace(/"/g, '&quot;');
+  function colName(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+  function cellXml(ref, c) {
+    if (c === null || c === undefined || c === '') return '';
+    let v = c, s = 0; if (typeof c === 'object') { v = c.v; s = c.s || 0; }
+    if (v === null || v === undefined || v === '') return s ? '<c r="' + ref + '" s="' + s + '"/>' : '';
+    if (typeof v === 'number' && isFinite(v)) return '<c r="' + ref + '"' + (s ? ' s="' + s + '"' : '') + '><v>' + v + '</v></c>';
+    return '<c r="' + ref + '" t="inlineStr"' + (s ? ' s="' + s + '"' : '') + '><is><t xml:space="preserve">' + esc(v) + '</t></is></c>';
+  }
+  function sheetXml(sh) {
+    const rows = sh.rows || []; let sd = '';
+    rows.forEach((row, r) => {
+      const cells = (row || []).map((c, i) => cellXml(colName(i) + (r + 1), c)).join('');
+      const ht = sh.rowHeights && sh.rowHeights[r];
+      sd += '<row r="' + (r + 1) + '"' + (ht ? ' ht="' + ht + '" customHeight="1"' : '') + '>' + cells + '</row>';
+    });
+    const cols = (sh.cols || []).map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('');
+    let pane = '';
+    if (sh.freeze) { const xs = sh.freeze.col || 0, ys = sh.freeze.row || 0; const tl = colName(xs) + (ys + 1);
+      pane = '<pane' + (xs ? ' xSplit="' + xs + '"' : '') + (ys ? ' ySplit="' + ys + '"' : '') + ' topLeftCell="' + tl + '" activePane="' + (xs && ys ? 'bottomRight' : (ys ? 'bottomLeft' : 'topRight')) + '" state="frozen"/>'; }
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0">' + pane + '</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
+      (cols ? '<cols>' + cols + '</cols>' : '') + '<sheetData>' + sd + '</sheetData><pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>';
+  }
+  function safeSheetName(n, used) {
+    let b = String(n).replace(/[\[\]:*?\/\\]/g, ' ').trim().slice(0, 31) || 'Sheet'; let name = b, k = 2;
+    while (used.indexOf(name.toLowerCase()) >= 0) { const suf = ' ' + k++; name = b.slice(0, 31 - suf.length) + suf; }
+    used.push(name.toLowerCase()); return name;
+  }
+  function zip(files) {
+    const chunks = [], central = []; let offset = 0; const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1), dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    for (const f of files) {
+      const name = enc.encode(f.name), data = f.data, crc = crc32(data), sz = data.length;
+      const lh = new DataView(new ArrayBuffer(30)); lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+      lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true); lh.setUint16(26, name.length, true);
+      chunks.push(new Uint8Array(lh.buffer), name, data);
+      const ch = new DataView(new ArrayBuffer(46)); ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true);
+      ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true); ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+      central.push(new Uint8Array(ch.buffer), name); offset += 30 + name.length + sz;
+    }
+    const cdSize = central.reduce((a, c) => a + c.length, 0);
+    const end = new DataView(new ArrayBuffer(22)); end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    return new Blob(chunks.concat(central, [new Uint8Array(end.buffer)]), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  /* sheets: [{name, rows:[[cell,...]], cols:[width,...], rowHeights:{rowIndex:pts}, freeze:{col,row}}] ; cell = text | number | {v, s} */
+  function build(sheets) {
+    const used = [], names = sheets.map(s => safeSheetName(s.name, used)); const X = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+    const files = [
+      { name: '[Content_Types].xml', data: enc.encode(X + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheets.map((_, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('') + '</Types>') },
+      { name: '_rels/.rels', data: enc.encode(X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') },
+      { name: 'xl/workbook.xml', data: enc.encode(X + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + names.map((n, i) => '<sheet name="' + escAttr(n) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join('') + '</sheets></workbook>') },
+      { name: 'xl/_rels/workbook.xml.rels', data: enc.encode(X + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map((_, i) => '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>').join('') + '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>') },
+      { name: 'xl/styles.xml', data: enc.encode(STYLES_XML) }
+    ];
+    sheets.forEach((s, i) => files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', data: enc.encode(sheetXml(s)) }));
+    return zip(files);
+  }
+  return { build, STY };
+})();
+
+/* Excel version of the view report: sheet 1 = summary + competency %, sheet 2 = the full list (schools / blocks / janpads). */
+function buildViewXlsx(spec) {
+  const S = XLSXW.STY, r1 = v => Math.round(v * 10) / 10, pctSty = p => ({ G: S.gP, Y: S.yP, R: S.rP })[statusOf(p)];
+  const SUBJ = { L: 'भाषा', M: 'गणित' }, k = spec.kpis, rows = [];
+  rows.push([{ v: 'मिशन दक्ष – दक्षता रिपोर्ट', s: S.title }]);
+  rows.push([spec.heading]); rows.push(['अंतिम अपडेट: ' + spec.generated]); rows.push([]);
+  rows.push([{ v: 'सारांश', s: S.hdr }, { v: 'मान', s: S.hdr }, { v: 'बच्चे', s: S.hdr }]);
+  rows.push([{ v: 'बच्चों का आकलन हुआ', s: S.left }, { v: k.n, s: S.num }, { v: '', s: S.txt }]);
+  rows.push([{ v: 'विद्यालय', s: S.left }, { v: k.schools, s: S.num }, { v: '', s: S.txt }]);
+  rows.push([{ v: '50% या अधिक दक्षताओं में दक्ष नहीं (%)', s: S.left }, { v: r1(k.ge50), s: S.pct }, { v: k.ge50N, s: S.num }]);
+  rows.push([{ v: 'किसी भी दक्षता में दक्ष नहीं (%) (शून्य अंक वाले समेत)', s: S.left }, { v: r1(k.none), s: S.pct }, { v: k.noneN, s: S.num }]);
+  rows.push([{ v: '   इनमें शून्य अंक वाले (%)', s: S.left }, { v: r1(k.zero), s: S.pct }, { v: k.zeroN, s: S.num }]);
+  rows.push([]);
+  rows.push([{ v: 'विषय', s: S.hdr }, { v: 'दक्षता', s: S.hdr }, { v: '% बच्चे दक्ष', s: S.hdr }]);
+  spec.comps.forEach((c, i) => rows.push([{ v: SUBJ[c.subject], s: S.txt }, { v: c.name, s: S.bold }, { v: r1(spec.compPcts[i]), s: pctSty(spec.compPcts[i]) }]));
+  rows.push([]);
+  const t = [CONFIG.GREEN_FROM + '% या अधिक', CONFIG.RED_BELOW + '-' + CONFIG.GREEN_FROM + '% के बीच', CONFIG.RED_BELOW + '% से कम'];
+  rows.push([{ v: t[0], s: S.G }, { v: t[1], s: S.Y }, { v: t[2], s: S.R }]);
+  const sheet1 = { name: 'सारांश', rows, cols: [52, 30, 14], rowHeights: { 5: 22 } };
+  const r2 = [[{ v: spec.listTitle, s: S.title }], [spec.heading], [], ['क्रम', spec.first, 'बच्चे'].concat(spec.comps.map(c => SUBJ[c.subject] + ': ' + c.name)).map(v => ({ v, s: S.hdr }))];
+  spec.rows.forEach((r, i) => r2.push([{ v: i + 1, s: S.num }, { v: r.name, s: S.left }, { v: r.n, s: S.num }].concat(r.pcts.map(p => ({ v: r1(p), s: pctSty(p) })))));
+  const sheet2 = { name: spec.sheetName, rows: r2, cols: [6, 44, 9].concat(spec.comps.map(() => 15)), rowHeights: { 4: 62 }, freeze: { col: 2, row: 4 } };
+  return XLSXW.build([sheet1, sheet2]);
+}
+
+/* ==========================================================================
    PDF reports (school / block). Portrait A4. Pages are drawn on a canvas
    (the browser shapes the Devanagari text) and stored as JPEG images in a small hand-written PDF.
    Content: for each class, the competencies of Hindi (भाषा) and Maths (गणित) ranked worst to best,
@@ -694,6 +828,92 @@ async function buildRankedPdf(spec) {
 }
 
 /* ==========================================================================
+   VIEW REPORT (landscape A4): the current dashboard view as a document —
+   summary tiles, the competency colour map, and the full list (schools / blocks / janpads).
+   spec: { heading, generated, listTitle, first, comps:[{name,subject}], compPcts:[..], kpis:{...}, rows:[{name,n,pcts}] }
+   ========================================================================== */
+async function buildViewPdf(spec) {
+  try { await Promise.all([400, 700, 800].map(w => document.fonts.load(w + ' 12px "MD Deva"', 'विद्यालय द्वारा'))); } catch (e) { }
+  const SC = 2.2, PW = 842, PH = 595, M = 32, ROW = 16, pages = [], f1 = v => (Math.round(v * 10) / 10).toFixed(1);
+  const newPage = () => { const c = document.createElement('canvas'); c.width = Math.round(PW * SC); c.height = Math.round(PH * SC); const x = c.getContext('2d'); x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height); x.scale(SC, SC); x.textBaseline = 'middle'; pages.push({ c, x }); return x; };
+  let x = newPage(), y = M;
+  const wrap = (txt, w) => wrapLinesPdf(x, txt, w);
+  const header = cont => {
+    x.fillStyle = '#B8333A'; x.fillRect(0, 0, PW, 6);
+    x.fillStyle = '#1c2433'; x.textAlign = 'left'; x.font = 'bold 17px ' + PDF_FONT; x.fillText('मिशन दक्ष – दक्षता रिपोर्ट' + (cont ? ' (जारी)' : ''), M, y + 10);
+    x.font = 'bold 12px ' + PDF_FONT; x.fillStyle = '#333'; x.fillText(pdfFit(x, spec.heading, PW - 2 * M), M, y + 31);
+    x.font = '9px ' + PDF_FONT; x.fillStyle = '#555'; x.fillText('अंतिम अपडेट: ' + spec.generated, M, y + 46);
+    y += 60;
+  };
+  const need = h => { if (y + h > PH - M - 14) { x = newPage(); y = M; header(true); return true; } return false; };
+  header(false);
+  // ---- summary tiles
+  const k = spec.kpis, tiles = [
+    ['बच्चों का आकलन हुआ', String(k.n), ''], ['विद्यालय', String(k.schools), ''],
+    ['50% या अधिक दक्षताओं में दक्ष नहीं', f1(k.ge50) + '%', '(' + k.ge50N + ' बच्चे)'],
+    ['किसी भी दक्षता में दक्ष नहीं (शून्य अंक वाले समेत)', f1(k.none) + '%', '(' + k.noneN + ' बच्चे) · शून्य अंक वाले: ' + k.zeroN]];
+  const tw = (PW - 2 * M - 3 * 10) / 4;
+  tiles.forEach((t, i) => {
+    const tx = M + i * (tw + 10); x.fillStyle = '#f3f6fb'; x.fillRect(tx, y, tw, 58); x.strokeStyle = '#BFC9DA'; x.lineWidth = .8; x.strokeRect(tx, y, tw, 58);
+    x.fillStyle = '#556'; x.textAlign = 'left'; x.font = 'bold 7.5px ' + PDF_FONT; wrapLinesPdf(x, t[0], tw - 14).slice(0, 2).forEach((ln, j) => x.fillText(ln, tx + 7, y + 9 + j * 9));
+    x.fillStyle = '#1c2433'; x.font = 'bold 19px ' + PDF_FONT; x.fillText(t[1], tx + 7, y + 36);
+    if (t[2]) { x.fillStyle = '#555'; x.font = '7.5px ' + PDF_FONT; x.fillText(pdfFit(x, t[2], tw - 14), tx + 7, y + 50); }
+  });
+  y += 70;
+  // ---- colour map
+  x.fillStyle = '#1d4f91'; x.font = 'bold 11.5px ' + PDF_FONT; x.textAlign = 'left'; x.fillText('एक दृष्टि में — दक्ष बच्चों का %', M, y + 6); y += 18;
+  [['R', CONFIG.RED_BELOW + '% से कम'], ['Y', CONFIG.RED_BELOW + '-' + CONFIG.GREEN_FROM + '% के बीच'], ['G', CONFIG.GREEN_FROM + '% या अधिक']].forEach((L, i) => {
+    const bx = M + i * 132; x.fillStyle = PDF_COL[L[0]][0]; x.fillRect(bx, y, 126, 13); x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(bx, y, 126, 13); x.fillStyle = PDF_COL[L[0]][1]; x.textAlign = 'center'; x.font = 'bold 7.5px ' + PDF_FONT; x.fillText(L[1], bx + 63, y + 7); });
+  y += 22;
+  [['L', 'भाषा'], ['M', 'गणित']].forEach(([sj, label]) => {
+    const items = spec.comps.map((c, i) => ({ c, p: spec.compPcts[i] })).filter(o => o.c.subject === sj); if (!items.length) return;
+    x.fillStyle = '#1c2433'; x.font = 'bold 10px ' + PDF_FONT; x.textAlign = 'left'; x.fillText(label, M, y + 5); y += 13;
+    const per = 6, gap = 8, bw = (PW - 2 * M - (per - 1) * gap) / per;
+    items.forEach((o, i) => {
+      const col = i % per, row = Math.floor(i / per), bx = M + col * (bw + gap), by = y + row * 42, st = statusOf(o.p), cc = PDF_COL[st];
+      x.fillStyle = cc[0]; x.fillRect(bx, by, bw, 36); x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(bx, by, bw, 36);
+      x.fillStyle = cc[1]; x.textAlign = 'left'; x.font = 'bold 8px ' + PDF_FONT; wrapLinesPdf(x, o.c.name, bw - 10).slice(0, 2).forEach((ln, j) => x.fillText(ln, bx + 5, by + 8 + j * 9));
+      x.font = 'bold 12px ' + PDF_FONT; x.fillText(f1(o.p) + '%', bx + 5, by + 28);
+    });
+    y += Math.ceil(items.length / per) * 42 + 6;
+  });
+  // ---- the list
+  need(60);
+  x.fillStyle = '#1d4f91'; x.font = 'bold 11.5px ' + PDF_FONT; x.textAlign = 'left'; x.fillText(spec.listTitle, M, y + 6); y += 18;
+  const noW = 24, nameW = 190, nW = 36, cw = (PW - 2 * M - noW - nameW - nW) / spec.comps.length, widths = [noW, nameW, nW].concat(spec.comps.map(() => cw));
+  const heads = ['क्रम', spec.first, 'बच्चे'].concat(spec.comps.map(c => c.name));
+  const tableHeader = () => {
+    x.font = 'bold 7px ' + PDF_FONT; const lines = heads.map((h, i) => wrapLinesPdf(x, h, widths[i] - 6)), hh = Math.max(...lines.map(l => l.length)) * 9 + 8; let cx = M;
+    heads.forEach((h, i) => { x.fillStyle = '#D9E2F3'; x.fillRect(cx, y, widths[i], hh); x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(cx, y, widths[i], hh); x.fillStyle = '#1c2433'; x.textAlign = 'center'; lines[i].forEach((ln, j) => x.fillText(ln, cx + widths[i] / 2, y + 8.5 + j * 9)); cx += widths[i]; });
+    y += hh;
+  };
+  need(50); tableHeader();
+  spec.rows.forEach((r, i) => {
+    if (need(ROW + 2)) tableHeader();
+    let cx = M; const vals = [String(i + 1), r.name, String(r.n)].concat(r.pcts.map(p => f1(p) + '%'));
+    vals.forEach((v, ci) => {
+      const st = ci >= 3 ? statusOf(r.pcts[ci - 3]) : null; if (st) { x.fillStyle = PDF_COL[st][0]; x.fillRect(cx, y, widths[ci], ROW); }
+      x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(cx, y, widths[ci], ROW);
+      x.fillStyle = st ? PDF_COL[st][1] : '#1c2433'; x.font = (st ? 'bold ' : '') + '7.5px ' + PDF_FONT;
+      if (ci === 1) { x.textAlign = 'left'; x.fillText(pdfFit(x, v, widths[ci] - 6), cx + 3, y + ROW / 2 + .5); } else { x.textAlign = 'center'; x.fillText(v, cx + widths[ci] / 2, y + ROW / 2 + .5); }
+      cx += widths[ci];
+    });
+    y += ROW;
+  });
+  need(30); y += 10;
+  x.fillStyle = '#1c2433'; x.font = 'bold 9.5px ' + PDF_FONT; x.textAlign = 'left'; x.fillText('मिशन दक्ष – कमजोर दक्षताओं की पहचान, फिर कैच-अप अभियान', M, y + 8);
+  pages.forEach((p, i) => { p.x.font = '8px ' + PDF_FONT; p.x.fillStyle = '#777'; p.x.textAlign = 'right'; p.x.fillText('पृष्ठ ' + (i + 1) + ' / ' + pages.length, PW - M, PH - 18); });
+  const imgs = [];
+  for (const p of pages) { const blob = await new Promise(r => p.c.toBlob(r, 'image/jpeg', 0.9)); imgs.push({ w: p.c.width, h: p.c.height, data: new Uint8Array(await blob.arrayBuffer()) }); }
+  return makePdf(imgs, PW, PH);
+}
+function wrapLinesPdf(ctx, text, maxW) {
+  const words = String(text).split(/\s+/), lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (!cur || ctx.measureText(t).width <= maxW) cur = t; else { lines.push(cur); cur = w; } }
+  if (cur) lines.push(cur); return lines;
+}
+
+/* ==========================================================================
    Mission Daksh – public dashboard  (GitHub Pages edition, read-only)
    The page only DISPLAYS data/summary.json. There is no admin section, login or password here:
    new data is prepared with the separate offline converter and uploaded to GitHub.
@@ -746,6 +966,27 @@ const SITE = {
       }
     }
     return { node, rows, title, where, kind };
+  }
+  /* download of the CURRENT view (area + class) as a report: PDF and Excel */
+  function viewSpec() {
+    const v = curView(), n = v.node; if (!n || !n.comps) return null; const bp = effectiveBlueprint(P.grade), rows = v.rows.filter(r => r.node && r.node.comps);
+    const first = { district: 'जनपद', block: 'ब्लॉक', school: 'विद्यालय' }[v.kind];
+    return { heading: v.where + ' · ' + gname(P.grade), generated: when(P.data.generatedAt), listTitle: v.title, first, sheetName: { district: 'जनपदवार सूची', block: 'ब्लॉकवार सूची', school: 'विद्यालयवार सूची' }[v.kind],
+      comps: bp.comps.map(c => ({ name: c.name, subject: c.subject })), compPcts: n.comps, kpis: { n: n.n, schools: n.schools, ge50: n.ge50, ge50N: n.ge50N, none: n.none, noneN: n.noneN, zero: n.zero, zeroN: n.zeroN },
+      rows: rows.map(r => ({ name: r.name, n: r.node.n, pcts: r.node.comps })) };
+  }
+  function viewFileName(ext) {
+    const dist = P.data.districts.find(x => x.name === P.district), blk = dist && dist.blocks.find(b => b.name === P.block);
+    const scope = P.district === 'all' ? 'All-Janpads' : (P.block === 'all' ? fileSafe(dist.name) : fileSafe(dist.name) + '_' + fileSafe(blk.name));
+    return 'Mission-Daksh_Report_' + scope + '_Class' + P.grade.slice(1) + '.' + ext;
+  }
+  async function downloadView(kind) {
+    const spec = viewSpec(); if (!spec) return; toast(kind === 'pdf' ? 'PDF बन रही है…' : 'Excel फ़ाइल बन रही है…');
+    if (kind === 'pdf') await saveFile(viewFileName('pdf'), await buildViewPdf(spec)); else await saveFile(viewFileName('xlsx'), buildViewXlsx(spec));
+  }
+  function downloadSection(v) {
+    return `<section class="sec dlsec"><h2>📥 रिपोर्ट डाउनलोड करें</h2><p class="hint">वर्तमान चयन — ${esc(v.where)} · ${gname(P.grade)} — की सूची और रिपोर्ट, जैसी इस पृष्ठ पर दिखाई गई है।</p>` +
+      `<div class="dlrow2"><button class="dlbtn" data-act="dl-view-pdf">⬇️ रिपोर्ट डाउनलोड करें (PDF)</button><button class="dlbtn alt" data-act="dl-view-xlsx">⬇️ सूची डाउनलोड करें (Excel)</button></div></section>`;
   }
   /* the block report is a key output, so it gets its own prominent card */
   function blockCard(dist, b) {
@@ -823,7 +1064,7 @@ const SITE = {
       h += `<h2 class="bh">📍 ${esc(v.where)} · ${gname(P.grade)}</h2>`;
       if (v.kind === 'school') h += blockCard(dist, dist.blocks.find(x => x.name === P.block));
       else if (v.kind === 'block') h += `<section class="sec"><h2>📑 ब्लॉक रिपोर्ट डाउनलोड करें</h2><div class="dlgrid">${dist.blocks.filter(b => b[P.grade] || P.data.grades.some(g => b[g])).map(b => blockCard(dist, b)).join('')}</div></section>`;
-      h += `<div class="kpis">${kpi('🧒', 'बच्चों का आकलन हुआ', n.n)}${kpi('🏫', 'विद्यालय', n.schools)}${kpi('🎯', 'औसत दक्षता', f1(n.avgDaksh) + '%', '', statusOf(n.avgDaksh))}` +
+      h += `<div class="kpis">${kpi('🧒', 'बच्चों का आकलन हुआ', n.n)}${kpi('🏫', 'विद्यालय', n.schools)}` +
         `${kpi('⚠️', '50% या अधिक दक्षताओं में दक्ष नहीं', f1(n.ge50) + '%', '(' + n.ge50N + ' बच्चे)', null)}${splitTile(n)}</div>`;
       h += `<section class="sec"><h2>🗺️ एक दृष्टि में — दक्ष बच्चों का %</h2><p class="legend">🟢 ${CONFIG.GREEN_FROM}% या अधिक · 🟡 ${CONFIG.RED_BELOW}-${CONFIG.GREEN_FROM}% के बीच · 🔴 ${CONFIG.RED_BELOW}% से कम</p>${heatMap(n, bp)}</section>`;
     }
@@ -835,6 +1076,7 @@ const SITE = {
     } else if (v.rows.length) {
       h += `<section class="sec"><h2>📋 ${esc(v.title)}</h2><p class="hint">प्रत्येक कोष्ठक में उस दक्षता में दक्ष बच्चों का % है (${gname(P.grade)})।</p>${dataTable(v, bp)}</section>`;
     }
+    if (n) h += downloadSection(v);
     h += `<div class="pubfoot"><b>🗓️ अंतिम अपडेट:</b> ${esc(when(d.generatedAt))}</div>`;
     h += '<p class="guide">मिशन दक्ष – कमजोर दक्षताओं की पहचान, फिर कैच-अप अभियान</p>';
     el.innerHTML = h;
@@ -889,6 +1131,8 @@ const SITE = {
     else if (a === 'schools-toggle') { P.schoolsOpen = !P.schoolsOpen; renderPublic(); }
     else if (a === 'pdf-school') pdfForSchool(t.getAttribute('data-code'));
     else if (a === 'pdf-block') pdfForBlock(t.getAttribute('data-d'), t.getAttribute('data-b'));
+    else if (a === 'dl-view-pdf') downloadView('pdf');
+    else if (a === 'dl-view-xlsx') downloadView('xlsx');
   });
   document.addEventListener('change', e => {
     const id = e.target && e.target.id;
@@ -916,6 +1160,7 @@ const SITE = {
     } catch (e) { P.live = null; P.state = 'error'; if (window.console) console.error(e); }
     P.data = P.live; renderPublic();
   }
+  if (window.__DAKSHA_TEST__) window.__viewSpec = viewSpec;   // test hook: lets the tests read exactly what goes into the report
   renderPublic(); loadLive();
 })();
 
