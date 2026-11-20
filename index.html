@@ -356,6 +356,28 @@ table.sch .thi .boardicon{width:2em;height:1.58em}
 .dlsec .dlbtn.alt{background:var(--purple,#6b4fbb)}
 @media(max-width:560px){.dlsec .dlbtn{width:100%}}
 
+/* data-quality report (converter only) */
+.rpt h4{margin:18px 0 6px}
+.rpt details{margin:12px 0}
+.rpt summary{cursor:pointer;font-weight:600;padding:6px 0}
+.rptwide table{font-size:12.5px}
+.rptwide th,.rptwide td{padding:6px 8px}
+.rptwide td.nm{text-align:left;font-weight:500}
+.rptwide th{text-align:center}
+
+.cleanbox{display:flex;flex-direction:column;gap:8px;margin:8px 0 10px}
+label.chk{display:flex;gap:10px;align-items:flex-start;line-height:1.45;cursor:pointer}
+label.chk input{margin-top:4px;width:17px;height:17px;flex:none}
+.rpt .defs p{margin:6px 0;line-height:1.5}
+.rptwide tbody.asr{border-top:2px solid var(--line,#c9d1e0)}
+.rptwide thead small{font-weight:400}
+.rptwide td small{color:#6b7385}
+
+/* कुल दक्ष बच्चे tile */
+.kpi .l em{display:block;font-style:normal;font-weight:600;font-size:.8rem;color:var(--muted);margin-top:2px}
+.kpi-btn .srow b{font-weight:800}
+button.kpi.kpi-btn{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start}
+
 </style>
 </head>
 <body>
@@ -379,6 +401,7 @@ const CONFIG = {
   // ONE colour scheme for "% children daksh": red below RED_BELOW, green from GREEN_FROM, yellow in between
   RED_BELOW: 50,
   GREEN_FROM: 75,
+  KUL_DAKSH_FROM: 75,   // "कुल दक्ष बच्चे": a child is daksh in a SUBJECT when daksh in at least this % of that subject's (counted) competencies
   // Weak parts: shown when below this (used by the admin preview checks)
   SUB_WEAK_BELOW: 75,
   HIDDEN_SUB_BELOW: 65,
@@ -518,7 +541,8 @@ function prepareChildren(objs, gk) {
     const ch = {
       consentNo, block: String(r['school_loc.Block_label'] || '').trim(),
       district: String(r['school_loc.District_label'] || '').trim(),
-      schoolKey: code || sname, schoolName: sname, res: {}, dakshCount: 0, corrTotal: 0, itemTotal: 0, ones: 0, negFlag: false, negBenign: false, rid: String(r['_id'] || '').trim().slice(0, 8)
+      schoolKey: code || sname, schoolName: sname, res: {}, dakshCount: 0, corrTotal: 0, itemTotal: 0, ones: 0, negFlag: false, negBenign: false, rid: String(r['_id'] || '').trim().slice(0, 8),
+      src: r   // the raw row, kept ONLY in memory for the admin-side data-quality report; never written to summary.json
     };
     for (const c of bp.comps) {
       const cell = col => String(r[col] == null ? '' : r[col]).trim();
@@ -562,42 +586,50 @@ const STATUS_ORDER = { R: 0, Y: 1, G: 2 };
 function summarize(children, gk) {
   const bp = effectiveBlueprint(gk); const n = children.length;
   const comps = bp.comps.map(c => {
-    let daksh = 0, skipped = 0, corrSum = 0;
+    let daksh = 0, skipped = 0, corrSum = 0, ex = 0;
     const bitSum = c.cols.map(() => 0);
     for (const ch of children) {
       const r = ch.res[c.id];
+      if (r.excl) { ex++; continue; }   // a result discarded in data cleaning (e.g. a doubtful passage score) counts nowhere: not in the daksh count, not in the number of children
       if (r.daksh) daksh++;
       if (r.skipped) skipped++;
       corrSum += r.corr;
       r.bits.forEach((b, i) => { bitSum[i] += b; });
     }
-    const pct = n ? 100 * daksh / n : 0;
-    const avgCorrect = (!c.passage && n) ? 100 * corrSum / (c.nScored * n) : null;
+    const nc = n - ex;   // children whose result for THIS competency is counted
+    const pct = nc ? 100 * daksh / nc : 0;
+    const avgCorrect = (!c.passage && nc) ? 100 * corrSum / (c.nScored * nc) : null;
     const subs = c.subs.map(s => {
-      const sp = n ? 100 * s.idx.reduce((a, i) => a + bitSum[i], 0) / (s.idx.length * n) : 0;
+      const sp = nc ? 100 * s.idx.reduce((a, i) => a + bitSum[i], 0) / (s.idx.length * nc) : 0;
       const trig = avgCorrect !== null && (sp < CONFIG.HIDDEN_SUB_BELOW || sp <= avgCorrect - CONFIG.HIDDEN_GAP);
       return { name: s.name, key: s.key, pct: sp, trig, link: c.linkKey + '|' + s.key };
     });
     const hidden = pct >= CONFIG.GREEN_FROM && subs.some(s => s.trig);   // info badge only: the colour follows the % alone
-    const items = (c.items || []).map((label, i) => ({ name: label, pct: n ? 100 * bitSum[i] / n : 0, pos: i }))
+    const items = (c.items || []).map((label, i) => ({ name: label, pct: nc ? 100 * bitSum[i] / nc : 0, pos: i }))
       .filter(it => c.scored.indexOf(it.pos) >= 0);
     const weakSubs = subs.filter(s => s.pct < CONFIG.SUB_WEAK_BELOW || s.trig).sort((a, b) => a.pct - b.pct);
     const weakItems = items.filter(it => it.pct < CONFIG.SUB_WEAK_BELOW).sort((a, b) => a.pct - b.pct);
     return {
-      id: c.id, gk, def: c, n, daksh, notDaksh: n - daksh, pct, skipped, avgCorrect, hidden,
+      id: c.id, gk, def: c, n: nc, nAll: n, daksh, notDaksh: nc - daksh, pct, skipped, avgCorrect, hidden,
       status: statusOf(pct), subs, weakSubs, weakItems,
       link: c.linkKey
     };
   });
   // child-level measures
-  let sumScore = 0, lt50 = 0, ge50 = 0, none = 0, zero = 0;
+  let sumScore = 0, lt50 = 0, ge50 = 0, none = 0, zero = 0, kulN = 0, langN = 0, mathN = 0;
   const half = bp.nComps / 2;
   for (const ch of children) {
     sumScore += ch.itemTotal ? 100 * ch.corrTotal / ch.itemTotal : 0;
-    if (ch.dakshCount < half) lt50++;   // G1: fewer than 5 of 10 ; G2: fewer than 5.5 of 11 (= 5 or fewer)
-    if (bp.nComps - ch.dakshCount >= half) ge50++;   // NOT daksh in half or more of the competencies (G1: 5+ of 10 ; G2: 6+ of 11)
+    const ev = bp.nComps - (ch.exclCount || 0);   // competencies whose result is counted for this child (all of them unless a result was discarded in cleaning)
+    if (ch.dakshCount * 2 < ev) lt50++;   // G1: fewer than 5 of 10 ; G2: fewer than 5.5 of 11 (= 5 or fewer)
+    if (ev > 0 && (ev - ch.dakshCount) * 2 >= ev) ge50++;   // NOT daksh in half or more of the counted competencies (G1: 5+ of 10 ; G2: 6+ of 11)
     if (ch.dakshCount === 0) none++;
     if (ch.ones === 0) zero++;
+    // कुल दक्ष बच्चे: daksh in 75%+ of the Language competencies AND, separately, in 75%+ of the Maths competencies
+    let evL = 0, dkL = 0, evM = 0, dkM = 0;
+    for (const c of bp.comps) { const r = ch.res[c.id]; if (r.excl) continue; if (c.subject === 'L') { evL++; if (r.daksh) dkL++; } else { evM++; if (r.daksh) dkM++; } }
+    const okL = evL > 0 && dkL * 100 >= CONFIG.KUL_DAKSH_FROM * evL, okM = evM > 0 && dkM * 100 >= CONFIG.KUL_DAKSH_FROM * evM;
+    if (okL) langN++; if (okM) mathN++; if (okL && okM) kulN++;
   }
   const pc = x => (n ? 100 * x / n : 0);
   const schools = new Set(children.map(c => c.schoolKey).filter(Boolean));
@@ -605,7 +637,8 @@ function summarize(children, gk) {
     n, schools: schools.size,
     avgScore: n ? sumScore / n : 0,
     avgDaksh: comps.length ? comps.reduce((a, c) => a + c.pct, 0) / comps.length : 0,
-    lt50: pc(lt50), lt50N: lt50, ge50: pc(ge50), ge50N: ge50, none: pc(none), noneN: none, zero: pc(zero), zeroN: zero
+    lt50: pc(lt50), lt50N: lt50, ge50: pc(ge50), ge50N: ge50, none: pc(none), noneN: none, zero: pc(zero), zeroN: zero,
+    kul: pc(kulN), kulN, lang: pc(langN), langN, math: pc(mathN), mathN
   };
   return { gk, bp, n, comps, measures };
 }
@@ -727,6 +760,11 @@ function buildViewXlsx(spec) {
   rows.push([{ v: 'सारांश', s: S.hdr }, { v: 'मान', s: S.hdr }, { v: 'बच्चे', s: S.hdr }]);
   rows.push([{ v: 'बच्चों का आकलन हुआ', s: S.left }, { v: k.n, s: S.num }, { v: '', s: S.txt }]);
   rows.push([{ v: 'विद्यालय', s: S.left }, { v: k.schools, s: S.num }, { v: '', s: S.txt }]);
+  if (k.kul != null) {
+    rows.push([{ v: 'कुल दक्ष बच्चे – भाषा और गणित दोनों में 75%+ (%)', s: S.left }, { v: r1(k.kul), s: S.pct }, { v: k.kulN, s: S.num }]);
+    rows.push([{ v: '   भाषा में दक्ष – भाषा की 75%+ दक्षताओं में (%)', s: S.left }, { v: r1(k.lang), s: S.pct }, { v: k.langN, s: S.num }]);
+    rows.push([{ v: '   गणित में दक्ष – गणित की 75%+ दक्षताओं में (%)', s: S.left }, { v: r1(k.math), s: S.pct }, { v: k.mathN, s: S.num }]);
+  }
   rows.push([{ v: '50% या अधिक दक्षताओं में दक्ष नहीं (%)', s: S.left }, { v: r1(k.ge50), s: S.pct }, { v: k.ge50N, s: S.num }]);
   rows.push([{ v: 'किसी भी दक्षता में दक्ष नहीं (%) (शून्य अंक वाले समेत)', s: S.left }, { v: r1(k.none), s: S.pct }, { v: k.noneN, s: S.num }]);
   rows.push([{ v: '   इनमें शून्य अंक वाले (%)', s: S.left }, { v: r1(k.zero), s: S.pct }, { v: k.zeroN, s: S.num }]);
@@ -852,7 +890,8 @@ async function buildViewPdf(spec) {
     ['बच्चों का आकलन हुआ', String(k.n), ''], ['विद्यालय', String(k.schools), ''],
     ['50% या अधिक दक्षताओं में दक्ष नहीं', f1(k.ge50) + '%', '(' + k.ge50N + ' बच्चे)'],
     ['किसी भी दक्षता में दक्ष नहीं (शून्य अंक वाले समेत)', f1(k.none) + '%', '(' + k.noneN + ' बच्चे) · शून्य अंक वाले: ' + k.zeroN]];
-  const tw = (PW - 2 * M - 3 * 10) / 4;
+  if (k.kul != null) tiles.splice(2, 0, ['कुल दक्ष बच्चे (भाषा और गणित दोनों में 75%+ दक्षताओं में)', f1(k.kul) + '%', '(' + k.kulN + ' बच्चे) · भाषा: ' + k.langN + ' · गणित: ' + k.mathN]);
+  const tw = (PW - 2 * M - (tiles.length - 1) * 10) / tiles.length;
   tiles.forEach((t, i) => {
     const tx = M + i * (tw + 10); x.fillStyle = '#f3f6fb'; x.fillRect(tx, y, tw, 58); x.strokeStyle = '#BFC9DA'; x.lineWidth = .8; x.strokeRect(tx, y, tw, 58);
     x.fillStyle = '#556'; x.textAlign = 'left'; x.font = 'bold 7.5px ' + PDF_FONT; wrapLinesPdf(x, t[0], tw - 14).slice(0, 2).forEach((ln, j) => x.fillText(ln, tx + 7, y + 9 + j * 9));
@@ -932,7 +971,7 @@ const SITE = {
   const SUBJ = { L: { icon: '📖', name: 'भाषा' }, M: { icon: '🔢', name: 'गणित' } };
   const gname = g => BLUEPRINT[g].name;
   const lab = x => x.hi || x.name || 'अज्ञात';
-  const P = { data: null, live: null, state: 'loading', district: 'all', block: 'all', grade: null, preview: false, splitOpen: false, schoolsOpen: false, q: '' };
+  const P = { data: null, live: null, state: 'loading', district: 'all', block: 'all', grade: null, preview: false, splitOpen: false, kulOpen: false, schoolsOpen: false, q: '' };
 
   /* ======================= PUBLIC SECTION (Hindi) ======================= */
   function msgBox(icon, text) { return `<div class="bigmsg"><div class="ic" aria-hidden="true">${icon}</div><p>${text}</p></div>`; }
@@ -942,6 +981,14 @@ const SITE = {
     return `<button class="kpi kpi-btn" data-act="split" aria-expanded="${open}" aria-controls="splitInfo"><span class="ic" aria-hidden="true">🚩</span>` +
       `<span class="v">${f1(m.none)}% <small>(${m.noneN} बच्चे)</small></span><span class="l">किसी भी दक्षता में दक्ष नहीं (शून्य अंक वाले समेत)</span><span class="more">${open ? '▲ विवरण छिपाएँ' : '▼ विवरण देखें'}</span>` +
       (open ? `<span class="split" id="splitInfo"><span class="srow"><span class="zchip">शून्य अंक वाले</span> ${m.zeroN} बच्चे (${pc(m.zeroN)}%)<em>एक भी उत्तर सही नहीं</em></span><span class="srow"><span class="ochip">अन्य</span> ${other} बच्चे (${pc(other)}%)<em>कुछ उत्तर सही, परंतु किसी दक्षता में दक्ष नहीं</em></span></span>` : '') + '</button>';
+  }
+  /* कुल दक्ष बच्चे: daksh in 75%+ of the Language competencies AND, separately, in 75%+ of the Maths competencies */
+  function kulTile(m) {
+    if (m.kul == null) return '';   // a summary file made before this measure existed: show nothing
+    const open = !!P.kulOpen, row = (ic, t, n, p, note) => `<span class="srow">${ic} ${t} <b>${n}</b> बच्चे (${f1(p)}%)<em>${note}</em></span>`;
+    return `<button class="kpi kpi-btn" data-act="kul" aria-expanded="${open}" aria-controls="kulInfo"><span class="ic" aria-hidden="true">🌟</span>` +
+      `<span class="v">${f1(m.kul)}% <small>(${m.kulN} बच्चे)</small></span><span class="l">कुल दक्ष बच्चे<em>भाषा और गणित, दोनों में 75% या अधिक दक्षताओं में दक्ष</em></span><span class="more">${open ? '▲ विवरण छिपाएँ' : '▼ विवरण देखें'}</span>` +
+      (open ? `<span class="split" id="kulInfo">` + row('📖', 'भाषा में दक्ष', m.langN, m.lang, 'भाषा की 75% या अधिक दक्षताओं में दक्ष') + row('🔢', 'गणित में दक्ष', m.mathN, m.math, 'गणित की 75% या अधिक दक्षताओं में दक्ष') + row('✅', 'दोनों में दक्ष', m.kulN, m.kul, 'यही “कुल दक्ष बच्चे” हैं') + '</span>' : '') + '</button>';
   }
   function ensureSelection() {
     const d = P.data; if (!d) return;
@@ -972,7 +1019,7 @@ const SITE = {
     const v = curView(), n = v.node; if (!n || !n.comps) return null; const bp = effectiveBlueprint(P.grade), rows = v.rows.filter(r => r.node && r.node.comps);
     const first = { district: 'जनपद', block: 'ब्लॉक', school: 'विद्यालय' }[v.kind];
     return { heading: v.where + ' · ' + gname(P.grade), generated: when(P.data.generatedAt), listTitle: v.title, first, sheetName: { district: 'जनपदवार सूची', block: 'ब्लॉकवार सूची', school: 'विद्यालयवार सूची' }[v.kind],
-      comps: bp.comps.map(c => ({ name: c.name, subject: c.subject })), compPcts: n.comps, kpis: { n: n.n, schools: n.schools, ge50: n.ge50, ge50N: n.ge50N, none: n.none, noneN: n.noneN, zero: n.zero, zeroN: n.zeroN },
+      comps: bp.comps.map(c => ({ name: c.name, subject: c.subject })), compPcts: n.comps, kpis: { n: n.n, schools: n.schools, ge50: n.ge50, ge50N: n.ge50N, none: n.none, noneN: n.noneN, zero: n.zero, zeroN: n.zeroN, kul: n.kul, kulN: n.kulN, lang: n.lang, langN: n.langN, math: n.math, mathN: n.mathN },
       rows: rows.map(r => ({ name: r.name, n: r.node.n, pcts: r.node.comps })) };
   }
   function viewFileName(ext) {
@@ -1064,7 +1111,7 @@ const SITE = {
       h += `<h2 class="bh">📍 ${esc(v.where)} · ${gname(P.grade)}</h2>`;
       if (v.kind === 'school') h += blockCard(dist, dist.blocks.find(x => x.name === P.block));
       else if (v.kind === 'block') h += `<section class="sec"><h2>📑 ब्लॉक रिपोर्ट डाउनलोड करें</h2><div class="dlgrid">${dist.blocks.filter(b => b[P.grade] || P.data.grades.some(g => b[g])).map(b => blockCard(dist, b)).join('')}</div></section>`;
-      h += `<div class="kpis">${kpi('🧒', 'बच्चों का आकलन हुआ', n.n)}${kpi('🏫', 'विद्यालय', n.schools)}` +
+      h += `<div class="kpis">${kpi('🧒', 'बच्चों का आकलन हुआ', n.n)}${kpi('🏫', 'विद्यालय', n.schools)}${kulTile(n)}` +
         `${kpi('⚠️', '50% या अधिक दक्षताओं में दक्ष नहीं', f1(n.ge50) + '%', '(' + n.ge50N + ' बच्चे)', null)}${splitTile(n)}</div>`;
       h += `<section class="sec"><h2>🗺️ एक दृष्टि में — दक्ष बच्चों का %</h2><p class="legend">🟢 ${CONFIG.GREEN_FROM}% या अधिक · 🟡 ${CONFIG.RED_BELOW}-${CONFIG.GREEN_FROM}% के बीच · 🔴 ${CONFIG.RED_BELOW}% से कम</p>${heatMap(n, bp)}</section>`;
     }
@@ -1104,7 +1151,7 @@ const SITE = {
       const subjects = ['L', 'M'].map(sj => ({ name: SUBJ[sj].name,
         rows: bp.comps.map((c, i) => ({ name: c.name, what: c.what, pct: node.comps[i], st: statusOf(node.comps[i]), subject: c.subject }))
           .filter(r => r.subject === sj).sort((a, b) => a.pct - b.pct) }));
-      sections.push({ label: gname(gk) + ' · आकलित बच्चे: ' + node.n, subjects });
+      sections.push({ label: gname(gk) + ' · आकलित बच्चे: ' + node.n + (node.kul != null ? ' · कुल दक्ष बच्चे: ' + f1(node.kul) + '% (' + node.kulN + ')' : ''), subjects });
     });
     return sections;
   }
@@ -1128,6 +1175,7 @@ const SITE = {
     const t = e.target.closest ? e.target.closest('[data-act]') : null; if (!t) return; const a = t.getAttribute('data-act');
     if (a === 'grade') { P.grade = t.getAttribute('data-g'); if (!P.q.trim()) P.schoolsOpen = false; renderPublic(); }   // an active search keeps the list open
     else if (a === 'split') { P.splitOpen = !P.splitOpen; renderPublic(); }
+    else if (a === 'kul') { P.kulOpen = !P.kulOpen; renderPublic(); }
     else if (a === 'schools-toggle') { P.schoolsOpen = !P.schoolsOpen; renderPublic(); }
     else if (a === 'pdf-school') pdfForSchool(t.getAttribute('data-code'));
     else if (a === 'pdf-block') pdfForBlock(t.getAttribute('data-d'), t.getAttribute('data-b'));
