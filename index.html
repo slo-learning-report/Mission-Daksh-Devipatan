@@ -377,6 +377,8 @@ label.chk input{margin-top:4px;width:17px;height:17px;flex:none}
 .kpi .l em{display:block;font-style:normal;font-weight:600;font-size:.8rem;color:var(--muted);margin-top:2px}
 .kpi-btn .srow b{font-weight:800}
 button.kpi.kpi-btn{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start}
+table.sch th.kulh{background:var(--blue-t,#e6eefb)}
+table.sch td.kulc{border-left:2px solid var(--blue);border-right:2px solid var(--blue);font-weight:800}
 
 </style>
 </head>
@@ -775,9 +777,9 @@ function buildViewXlsx(spec) {
   const t = [CONFIG.GREEN_FROM + '% या अधिक', CONFIG.RED_BELOW + '-' + CONFIG.GREEN_FROM + '% के बीच', CONFIG.RED_BELOW + '% से कम'];
   rows.push([{ v: t[0], s: S.G }, { v: t[1], s: S.Y }, { v: t[2], s: S.R }]);
   const sheet1 = { name: 'सारांश', rows, cols: [52, 30, 14], rowHeights: { 5: 22 } };
-  const r2 = [[{ v: spec.listTitle, s: S.title }], [spec.heading], [], ['क्रम', spec.first, 'बच्चे'].concat(spec.comps.map(c => SUBJ[c.subject] + ': ' + c.name)).map(v => ({ v, s: S.hdr }))];
-  spec.rows.forEach((r, i) => r2.push([{ v: i + 1, s: S.num }, { v: r.name, s: S.left }, { v: r.n, s: S.num }].concat(r.pcts.map(p => ({ v: r1(p), s: pctSty(p) })))));
-  const sheet2 = { name: spec.sheetName, rows: r2, cols: [6, 44, 9].concat(spec.comps.map(() => 15)), rowHeights: { 4: 62 }, freeze: { col: 2, row: 4 } };
+  const r2 = [[{ v: spec.listTitle, s: S.title }], [spec.heading], [], ['क्रम', spec.first, 'बच्चे'].concat(spec.hasKul ? ['कुल दक्ष बच्चे (%)'] : []).concat(spec.comps.map(c => SUBJ[c.subject] + ': ' + c.name)).map(v => ({ v, s: S.hdr }))];
+  spec.rows.forEach((r, i) => r2.push([{ v: i + 1, s: S.num }, { v: r.name, s: S.left }, { v: r.n, s: S.num }].concat(spec.hasKul ? [r.kul != null ? { v: r1(r.kul), s: pctSty(r.kul) } : { v: '', s: S.txt }] : []).concat(r.pcts.map(p => ({ v: r1(p), s: pctSty(p) })))));
+  const sheet2 = { name: spec.sheetName, rows: r2, cols: [6, 44, 9].concat(spec.hasKul ? [16] : []).concat(spec.comps.map(() => 15)), rowHeights: { 4: 62 }, freeze: { col: 2, row: 4 } };
   return XLSXW.build([sheet1, sheet2]);
 }
 
@@ -810,6 +812,7 @@ function makePdf(imgs, PW, PH) {
 }
 /* spec: { heading, subtitle, sections: [{ label, subjects: [{ name, icon, rows: [{name, what, pct, st}] }] }], generated } */
 async function buildRankedPdf(spec) {
+  const f1 = v => (Math.round(v * 10) / 10).toFixed(1);
   try { await Promise.all([400, 700, 800].map(w => document.fonts.load(w + ' 12px "MD Deva"', 'विद्यालय द्वारा'))); } catch (e) { }   // draw only once the embedded Devanagari font is ready
   const SC = 2.2, PW = 595, PH = 842, M = 40, ROW = 22, pages = [];
   const newPage = () => { const c = document.createElement('canvas'); c.width = Math.round(PW * SC); c.height = Math.round(PH * SC); const x = c.getContext('2d'); x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height); x.scale(SC, SC); x.textBaseline = 'middle'; pages.push({ c, x }); return x; };
@@ -831,6 +834,15 @@ async function buildRankedPdf(spec) {
   for (const sec of spec.sections) {
     need(34);
     x.fillStyle = '#1d4f91'; x.textAlign = 'left'; x.font = 'bold 12.5px ' + PDF_FONT; x.fillText(sec.label, M, y + 8); y += 22;
+    if (sec.kul) {   // कुल दक्ष बच्चे: daksh in 75%+ of the Language competencies AND, separately, of the Maths competencies
+      const k = sec.kul, W0 = PW - 2 * M, bh = k.lang != null ? 54 : 40; need(bh + 12);
+      x.fillStyle = '#EEF3FB'; x.fillRect(M, y, W0, bh); x.strokeStyle = '#1d4f91'; x.lineWidth = .8; x.strokeRect(M, y, W0, bh); x.fillStyle = '#1d4f91'; x.fillRect(M, y, 5, bh);
+      x.textAlign = 'left'; x.fillStyle = '#1c2433'; x.font = 'bold 10px ' + PDF_FONT; x.fillText('कुल दक्ष बच्चे', M + 14, y + 12);
+      x.font = '7.4px ' + PDF_FONT; x.fillStyle = '#50607a'; x.fillText(pdfFit(x, 'भाषा और गणित, दोनों में 75% या अधिक दक्षताओं में दक्ष', W0 - 168), M + 14, y + 25);
+      x.textAlign = 'right'; x.fillStyle = '#1c2433'; x.font = 'bold 20px ' + PDF_FONT; x.fillText(f1(k.pct) + '%', M + W0 - 96, y + 19); x.textAlign = 'left'; x.font = 'bold 9px ' + PDF_FONT; x.fillText('(' + k.n + ' बच्चे)', M + W0 - 88, y + 19);
+      if (k.lang != null) { x.font = '8.5px ' + PDF_FONT; x.fillStyle = '#1c2433'; x.fillText('भाषा में दक्ष: ' + f1(k.lang) + '% (' + k.langN + ' बच्चे)   ·   गणित में दक्ष: ' + f1(k.math) + '% (' + k.mathN + ' बच्चे)', M + 14, y + 44); }
+      y += bh + 12;
+    }
     for (const sj of sec.subjects) {
       need(16 + 16 + sj.rows.length * ROW + 10);   // keep a whole subject table on one page
       x.fillStyle = '#1c2433'; x.font = 'bold 10.5px ' + PDF_FONT; x.textAlign = 'left'; x.fillText(sj.name + ' — सबसे कमजोर से सबसे अच्छी', M, y + 6); y += 16;
@@ -919,8 +931,8 @@ async function buildViewPdf(spec) {
   // ---- the list
   need(60);
   x.fillStyle = '#1d4f91'; x.font = 'bold 11.5px ' + PDF_FONT; x.textAlign = 'left'; x.fillText(spec.listTitle, M, y + 6); y += 18;
-  const noW = 24, nameW = 190, nW = 36, cw = (PW - 2 * M - noW - nameW - nW) / spec.comps.length, widths = [noW, nameW, nW].concat(spec.comps.map(() => cw));
-  const heads = ['क्रम', spec.first, 'बच्चे'].concat(spec.comps.map(c => c.name));
+  const ex = spec.hasKul ? 1 : 0, noW = 24, nameW = 190, nW = 36, kW = 46, cw = (PW - 2 * M - noW - nameW - nW - ex * kW) / spec.comps.length, widths = [noW, nameW, nW].concat(ex ? [kW] : []).concat(spec.comps.map(() => cw));
+  const heads = ['क्रम', spec.first, 'बच्चे'].concat(ex ? ['कुल दक्ष बच्चे %'] : []).concat(spec.comps.map(c => c.name));
   const tableHeader = () => {
     x.font = 'bold 7px ' + PDF_FONT; const lines = heads.map((h, i) => wrapLinesPdf(x, h, widths[i] - 6)), hh = Math.max(...lines.map(l => l.length)) * 9 + 8; let cx = M;
     heads.forEach((h, i) => { x.fillStyle = '#D9E2F3'; x.fillRect(cx, y, widths[i], hh); x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(cx, y, widths[i], hh); x.fillStyle = '#1c2433'; x.textAlign = 'center'; lines[i].forEach((ln, j) => x.fillText(ln, cx + widths[i] / 2, y + 8.5 + j * 9)); cx += widths[i]; });
@@ -929,9 +941,10 @@ async function buildViewPdf(spec) {
   need(50); tableHeader();
   spec.rows.forEach((r, i) => {
     if (need(ROW + 2)) tableHeader();
-    let cx = M; const vals = [String(i + 1), r.name, String(r.n)].concat(r.pcts.map(p => f1(p) + '%'));
+    let cx = M; const vals = [String(i + 1), r.name, String(r.n)].concat(ex ? [r.kul != null ? f1(r.kul) + '%' : '—'] : []).concat(r.pcts.map(p => f1(p) + '%'));
+    const pctAt = ci => (ex && ci === 3) ? r.kul : r.pcts[ci - 3 - ex];
     vals.forEach((v, ci) => {
-      const st = ci >= 3 ? statusOf(r.pcts[ci - 3]) : null; if (st) { x.fillStyle = PDF_COL[st][0]; x.fillRect(cx, y, widths[ci], ROW); }
+      const st = ci >= 3 && pctAt(ci) != null ? statusOf(pctAt(ci)) : null; if (st) { x.fillStyle = PDF_COL[st][0]; x.fillRect(cx, y, widths[ci], ROW); }
       x.strokeStyle = '#BFBFBF'; x.lineWidth = .5; x.strokeRect(cx, y, widths[ci], ROW);
       x.fillStyle = st ? PDF_COL[st][1] : '#1c2433'; x.font = (st ? 'bold ' : '') + '7.5px ' + PDF_FONT;
       if (ci === 1) { x.textAlign = 'left'; x.fillText(pdfFit(x, v, widths[ci] - 6), cx + 3, y + ROW / 2 + .5); } else { x.textAlign = 'center'; x.fillText(v, cx + widths[ci] / 2, y + ROW / 2 + .5); }
@@ -1020,7 +1033,7 @@ const SITE = {
     const first = { district: 'जनपद', block: 'ब्लॉक', school: 'विद्यालय' }[v.kind];
     return { heading: v.where + ' · ' + gname(P.grade), generated: when(P.data.generatedAt), listTitle: v.title, first, sheetName: { district: 'जनपदवार सूची', block: 'ब्लॉकवार सूची', school: 'विद्यालयवार सूची' }[v.kind],
       comps: bp.comps.map(c => ({ name: c.name, subject: c.subject })), compPcts: n.comps, kpis: { n: n.n, schools: n.schools, ge50: n.ge50, ge50N: n.ge50N, none: n.none, noneN: n.noneN, zero: n.zero, zeroN: n.zeroN, kul: n.kul, kulN: n.kulN, lang: n.lang, langN: n.langN, math: n.math, mathN: n.mathN },
-      rows: rows.map(r => ({ name: r.name, n: r.node.n, pcts: r.node.comps })) };
+      hasKul: rows.some(r => r.node.kul != null), rows: rows.map(r => ({ name: r.name, n: r.node.n, kul: r.node.kul, pcts: r.node.comps })) };
   }
   function viewFileName(ext) {
     const dist = P.data.districts.find(x => x.name === P.district), blk = dist && dist.blocks.find(b => b.name === P.block);
@@ -1037,7 +1050,7 @@ const SITE = {
   }
   /* the block report is a key output, so it gets its own prominent card */
   function blockCard(dist, b) {
-    const chips = P.data.grades.filter(g => b[g]).map(g => `<span class="dlchip">${gname(g)} · ${b[g].n} बच्चे</span>`).join('');
+    const chips = P.data.grades.filter(g => b[g]).map(g => `<span class="dlchip">${gname(g)} · ${b[g].n} बच्चे${b[g].kul != null ? ' · कुल दक्ष ' + f1(b[g].kul) + '%' : ''}</span>`).join('');
     return `<div class="dlcard"><div class="dlic" aria-hidden="true">📑</div><div class="dltxt"><span class="dlkick">ब्लॉक रिपोर्ट · PDF</span><h3>${esc(lab(b))} ब्लॉक</h3><div class="dlchips">${chips}</div></div>` +
       `<button class="dlbtn" data-act="pdf-block" data-d="${esc(dist.name)}" data-b="${esc(b.name)}" aria-label="${esc(lab(b))} ब्लॉक की रिपोर्ट डाउनलोड करें (PDF)">⬇️ रिपोर्ट डाउनलोड करें</button></div>`;
   }
@@ -1075,17 +1088,17 @@ const SITE = {
     return note + dataTable(Object.assign({}, v, { rows }), bp);
   }
   function dataTable(v, bp) {
-    const dlCol = v.kind !== 'district';   // no table has an average column
-    const head = '<tr><th>' + ({ district: 'जनपद', block: 'ब्लॉक', school: 'विद्यालय' }[v.kind]) + '</th><th>बच्चे</th>' + bp.comps.map(c => `<th><span class="thi">${iconHtml(c.icon)}</span><br>${esc(c.name)}</th>`).join('') + (dlCol ? '<th>रिपोर्ट</th>' : '') + '</tr>';
+    const dlCol = v.kind !== 'district', hasKul = v.rows.some(r => r.node && r.node.kul != null);   // no table has an average column; कुल दक्ष बच्चे % sits right after the number of children
+    const head = '<tr><th>' + ({ district: 'जनपद', block: 'ब्लॉक', school: 'विद्यालय' }[v.kind]) + '</th><th>बच्चे</th>' + (hasKul ? '<th class="kulh"><span class="thi">🌟</span><br>कुल दक्ष बच्चे %</th>' : '') + bp.comps.map(c => `<th><span class="thi">${iconHtml(c.icon)}</span><br>${esc(c.name)}</th>`).join('') + (dlCol ? '<th>रिपोर्ट</th>' : '') + '</tr>';
     const band = p => 't-' + statusOf(p);
     const rows = v.rows.map((r, i) => {
       const n = r.node;
-      if (!n || n.suppressed || !n.comps) return `<tr><td class="nm">${esc(r.name)}</td>` + `<td class="hid">—</td>`.repeat(bp.comps.length + 1 + (dlCol ? 1 : 0)) + '</tr>';
+      if (!n || n.suppressed || !n.comps) return `<tr><td class="nm">${esc(r.name)}</td>` + `<td class="hid">—</td>`.repeat(bp.comps.length + 1 + (hasKul ? 1 : 0) + (dlCol ? 1 : 0)) + '</tr>';
       const btn = v.kind === 'school' ? `<button class="pdfbtn" data-act="pdf-school" data-code="${esc(r.code)}" aria-label="${esc(r.name)} की रिपोर्ट (PDF)">📄 PDF</button>`
         : `<button class="pdfbtn" data-act="pdf-block" data-d="${esc(r.d)}" data-b="${esc(r.b)}" aria-label="${esc(r.name)} ब्लॉक की रिपोर्ट (PDF)">📄 रिपोर्ट</button>`;
-      return `<tr><td class="nm">${esc(r.name)}</td><td>${n.n}</td>` + n.comps.map(p => `<td class="${band(p)}">${f1(p)}</td>`).join('') + (dlCol ? `<td>${btn}</td>` : '') + '</tr>';
+      return `<tr><td class="nm">${esc(r.name)}</td><td>${n.n}</td>` + (hasKul ? (n.kul != null ? `<td class="kulc ${band(n.kul)}">${f1(n.kul)}</td>` : '<td class="hid kulc">—</td>') : '') + n.comps.map(p => `<td class="${band(p)}">${f1(p)}</td>`).join('') + (dlCol ? `<td>${btn}</td>` : '') + '</tr>';
     }).join('');
-    return `<div class="tblwrap"><table class="sch"><thead>${head}</thead><tbody>${rows || `<tr><td class="hid" colspan="${bp.comps.length + 2 + (dlCol ? 1 : 0)}">इस चयन में दिखाने के लिए कुछ नहीं है।</td></tr>`}</tbody></table></div>`;
+    return `<div class="tblwrap"><table class="sch"><thead>${head}</thead><tbody>${rows || `<tr><td class="hid" colspan="${bp.comps.length + 2 + (hasKul ? 1 : 0) + (dlCol ? 1 : 0)}">इस चयन में दिखाने के लिए कुछ नहीं है।</td></tr>`}</tbody></table></div>`;
   }
   function when(iso) { try { return new Date(iso).toLocaleString('hi-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso || ''; } }
   function renderPublic() {
@@ -1151,7 +1164,7 @@ const SITE = {
       const subjects = ['L', 'M'].map(sj => ({ name: SUBJ[sj].name,
         rows: bp.comps.map((c, i) => ({ name: c.name, what: c.what, pct: node.comps[i], st: statusOf(node.comps[i]), subject: c.subject }))
           .filter(r => r.subject === sj).sort((a, b) => a.pct - b.pct) }));
-      sections.push({ label: gname(gk) + ' · आकलित बच्चे: ' + node.n + (node.kul != null ? ' · कुल दक्ष बच्चे: ' + f1(node.kul) + '% (' + node.kulN + ')' : ''), subjects });
+      sections.push({ label: gname(gk) + ' · आकलित बच्चे: ' + node.n, kul: node.kul != null ? { pct: node.kul, n: node.kulN, lang: node.lang, langN: node.langN, math: node.math, mathN: node.mathN } : null, subjects });
     });
     return sections;
   }
